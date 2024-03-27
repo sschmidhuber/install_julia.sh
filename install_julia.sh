@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-# Purpose of this script is to install / uninstall Julia on Linux systems.
+# Purpose of this script is to install / uninstall Julia on Linux and FreeBSD systems.
 
 # THE SOFTWARE IS PROVIDED ‘AS IS’, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -13,6 +13,27 @@ set -o noclobber
 set -o errexit
 set -o pipefail
 set -o nounset
+
+
+## consts
+
+HELP="Usage: install_julia.sh [command] [argument]\n\n
+
+Run without any parameters to enter interactive mode. Following commands and\n
+arguments are supportet for non-interactive usage:\n\n
+
+install [latest|lts|<version>]\t install the latest stable release (default), the current LTS version or a specific version, e.g. \"1.11.0-alpha2\"\n
+list\t\t\t\t list all installed versions\n
+uninstall <version>\t\t uninstall a specific julia version\n
+help\t\t\t\t show this help text\n\n
+
+Version:\n
+ a specific version can be specified as \"julia-x.y.z[-abc]\" or "x.y.z[-abc]"\n\n
+
+Examples:\n
+ install_julia.sh install 1.11.0-alpha2\t\t # install julia-1.11.0-alpha2\n
+ install_julia.sh uninstall julia-1.11.0\t # uninstall julia-1.11.0
+"
 
 
 ## functions
@@ -35,15 +56,78 @@ print_msg() {
     fi    
 }
 
-# check if all dependencies and permissions are fulfilled
-check_prerequisites() {
+check_permissions() {
     if [[ $(whoami) != "root" ]]; then
-        print_msg "This script needs to be executed with root permissions. Try \"sudo ./install_julia.sh\""
+        print_msg "Root privileges required for this operation. Try to prepend \"sudo\"."
         exit 1
     fi
+}
+
+# check if all dependencies and permissions are fulfilled
+check_dependencies() {
     if ! which curl > /dev/null; then
         print_msg "Missing dependency \"curl\""
         exit 2
+    fi
+    if ! which tar > /dev/null; then
+        print_msg "Missing dependency \"tar\""
+        exit 2
+    fi
+    if ! which lscpu > /dev/null; then
+        print_msg "Missing dependency \"lscpu\""
+        exit 2
+    fi
+    if ! which sed > /dev/null; then
+        print_msg "Missing dependency \"sed\""
+        exit 2
+    fi
+}
+
+# parse arguments
+check_agrs() {
+    if [[ $# -eq 0 ]]; then
+        # interactive mode
+        get_installed_versions
+        get_available_versions        
+        main_menu
+    else
+        # non-interactive mode
+        if [[ $# -gt 2 ]]; then
+            print_msg "Invalid number of arguments."
+            exit 1
+        fi
+        case $1 in
+            -h | --help | h | help)
+            echo -e ${HELP}
+            exit 0
+            ;;
+            install)
+            echo "install julia"
+            exit 0
+            ;;
+            list)
+            show_installed_versions
+            exit 0
+            ;;
+            uninstall)
+            uninstall $2
+            exit 0
+            ;;
+            *)
+            print_msg "Invalid command, try \"help\" to show help."
+            exit 1
+        esac
+    fi
+}
+
+# set installation directory
+set_install_directory() {
+    if [[ $(uname) = "Linux" ]]; then
+        install_dir="/opt/"
+    elif [[ $(uname) = "FreeBSD" ]]; then
+        install_dir="/usr/local/"
+    else
+        print_msg "Unsupportet operating system: \"$(uname)\", only Linux and FreeBSD are supportet by this installation script."
     fi
 }
 
@@ -58,31 +142,34 @@ get_available_versions() {
 
 # check for installed julia versions
 get_installed_versions() {
-    if [[ $(ls /opt/ | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$ | wc -l) -eq 0  ]]; then
+    if [[ $(ls ${install_dir} | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$ | wc -l) -eq 0  ]]; then
         installed_versions=""
     else
-        readarray -t installed_versions < <(ls /opt/ | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$)
+        readarray -t installed_versions < <(ls ${install_dir} | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$)
     fi
 }
 
 
-# display all installed versions, if argument "num" is provided, the entries are prefixed with numbers
-# to be selected by a user
+# display all installed versions, if argument "num" is provided, the entries are prefixed with numbers to be selected by a user
 show_installed_versions() {
-    echo ""
-    for i in $(seq ${#installed_versions[*]}); do
-        if [[ $# -eq 1 && ${1} == "num" ]]; then
+    if [[ $# -eq 0 ]]; then
+        for i in $(seq ${#installed_versions[*]}); do
+            echo -en "${installed_versions[$((${i}-1))]}\n"
+        done
+    elif [[ $# -eq 1 && $1 == "num" ]]; then
+        echo ""
+        for i in $(seq ${#installed_versions[*]}); do
             echo -en "[${i}] "
-        fi
-        echo -en "${installed_versions[$((${i}-1))]}\n"
-    done
-    echo ""
+            echo -en "${installed_versions[$((${i}-1))]}\n"
+        done
+        echo ""
+    fi
 }
 
 # set arch variable for this system
 set_architecture() {
     case $(lscpu | grep Architecture | tr -s " " | cut -d " " -f 2) in
-        x86_64)
+        x86_64 | amd64)
         arch="x86_64"
         ;;
         i686)
@@ -90,6 +177,9 @@ set_architecture() {
         ;;
         aarch64)
         arch="aarch64"
+        ;;
+        ppc64le)
+        arch="ppc64le"
         ;;
         *)
         arch=""
@@ -124,36 +214,43 @@ show_suggested_install_options() {
 
 # install a specific version of julia
 install() {
+    #check_permissions
+
+
     local download_url=$(echo "${source}" | grep -Eo https://.+${1}.tar.gz | head -n 1)
     local name=$(echo ${1} | grep -Eo julia-[0-9]+\.[0-9]+\.[0-9])
     local input
 
     clear
-    if [[ -d /opt/${name} ]]; then
+    if [[ -d ${install_dir}${name} ]]; then
         print_msg "${name} is already installed on this system" warn
         exit 0
     fi
 
+echo $1
+
+exit 0
+
     echo -e "download ${1} ...\n"
-    curl -o /opt/${1}.tag.gz ${download_url}
+    curl -o ${install_dir}${1}.tag.gz ${download_url}
     clear
     echo "download ${1} ... done"
     
     echo -n "extract archive ..."
-    tar -C /opt/ -xf /opt/${1}.tag.gz
+    tar -C ${install_dir} -xf ${install_dir}${1}.tag.gz
     echo " done"
     
     echo -n "remove archive ..."
-    rm /opt/${1}.tag.gz
+    rm ${install_dir}${1}.tag.gz
     echo " done"
     
     echo -n "create version specific link ..."
     name=$(echo ${1} | grep -Eo julia-[0-9]+\.[0-9]+\.[0-9])
-    ln -s /opt/${name}/bin/julia /usr/bin/${name}
+    ln -s ${install_dir}${name}/bin/julia /usr/bin/${name}
     echo " done"
 
     echo -e "\nInstallation completed successfully!"
-    echo -e "Installation directory: /opt/${name}\n"
+    echo -e "Installation directory: ${install_dir}${name}\n"
     while true; do
         read -p "Set ${name} as default julia version on this system [Y/n]: " input
         case ${input} in
@@ -161,7 +258,7 @@ install() {
             if [[ -h /usr/bin/julia ]]; then
                 rm /usr/bin/julia                
             fi
-            ln -s /opt/${name}/bin/julia /usr/bin/julia
+            ln -s ${install_dir}${name}/bin/julia /usr/bin/julia
             break
             ;;
             n | N | no | No | NO)
@@ -208,7 +305,7 @@ install_menu() {
             exit 0
             ;;
             b)
-            command=main
+            command=main_menu
             break
             ;;
             "")
@@ -232,21 +329,37 @@ install_menu() {
 
 # unsinstall a specific julia version
 uninstall() {
-    if [[ -d /opt/${1} ]]; then
+    check_permissions
+    local version
+
+    # prepend 'julia-' to version string if required
+    if [[ ${1:0:6} != "julia-" ]]; then
+        version="julia-${1}"
+    else
+        version=${1}
+    fi
+
+    # validate version string with installed versions
+    if [[ ! $(echo ${installed_versions[*]} | grep -o ${version}) ]]; then
+        print_msg "Invalid julia version: ${version}" error
+        exit 1
+    fi
+
+    if [[ -d ${install_dir}${version} ]]; then
         # check for default installation
-        if [[ $(readlink -f /usr/bin/julia | grep -o ${1}) == ${1} ]]; then
+        if [[ $(readlink -f /usr/bin/julia | grep -o ${version}) ]]; then
             rm /usr/bin/julia
         fi
-        rm /usr/bin/${1}
-        rm -r /opt/${1}
+        rm /usr/bin/${version}
+        rm -r ${install_dir}${version}
         if [[ ${?} ]]; then
-            print_msg "${1} deleted successfully" info
+            print_msg "${version} deleted successfully" info
             exit 0
         else
             exit 1
         fi
     else
-        print_msg "Installation directory: '/opt/${1}' not found." error
+        print_msg "Installation directory: '${install_dir}${1}' not found." error
         exit 1
     fi
 }
@@ -267,7 +380,7 @@ uninstall_menu() {
             exit 0
             ;;
             b)
-            command=main
+            command=main_menu
             break
             ;;
             "")
@@ -289,7 +402,7 @@ uninstall_menu() {
 
 
 # main menu
-main() {
+main_menu() {
     local input
     local command
 
@@ -298,14 +411,16 @@ main() {
     fi
     
     if [[ -z ${installed_versions} ]]; then
-        print_msg "no Julia installation found in directory /opt/" info
+        print_msg "no Julia installation found in directory ${install_dir}" info
     else
         if [[ ${#installed_versions[*]} -eq 1 ]]; then
             echo -e "Julia installation found:"
         else
             echo -e "Multiple Julia installations found:"
         fi
+        echo ""
         show_installed_versions
+        echo ""
     fi
     
     echo -e "[i] Install"
@@ -343,9 +458,10 @@ main() {
 
 ## entry point
 
-check_prerequisites
+check_dependencies
 set_architecture
+set_install_directory
 get_installed_versions
-get_available_versions
+check_agrs $@
 
-main
+exit 0
