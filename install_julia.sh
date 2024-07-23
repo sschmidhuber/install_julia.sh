@@ -32,7 +32,7 @@ Version:\n
 
 Examples:\n
  install_julia.sh install 1.11.0-alpha2\t\t # install julia-1.11.0-alpha2\n
- install_julia.sh uninstall julia-1.11.0\t # uninstall julia-1.11.0
+ install_julia.sh uninstall 1.10.0\t # uninstall julia-1.10.0
 "
 
 
@@ -101,17 +101,39 @@ check_agrs() {
             echo -e ${HELP}
             exit 0
             ;;
-            install)
-            echo "install julia"
-            exit 0
+            install | i)
+            get_available_versions
+            if [[ $# -eq 1 ]]; then
+                install $latest
+                exit 0
+            elif [[ $2 == "latest" ]]; then
+                install $latest
+                exit 0
+            elif [[ $2 == "lts" ]]; then
+                install $lts
+                exit 0
+            elif [[ $# -eq 2 ]]; then
+                install $(get_full_version_string $2)
+                exit 0
+            else
+                print_msg "Invalid number of arguments."
+                exit 1
+            fi
             ;;
             list)
+            get_installed_versions
             show_installed_versions
             exit 0
             ;;
             uninstall)
-            uninstall $2
-            exit 0
+            if [[ $# -eq 2 ]]; then
+                get_installed_versions
+                uninstall $2
+                exit 0
+            else
+                print_msg "No version specified."
+                exit 1
+            fi
             ;;
             *)
             print_msg "Invalid command, try \"help\" to show help."
@@ -142,10 +164,10 @@ get_available_versions() {
 
 # check for installed julia versions
 get_installed_versions() {
-    if [[ $(ls ${install_dir} | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$ | wc -l) -eq 0  ]]; then
+    if [[ $(ls ${install_dir} | grep -E "^julia-[0-9]+\.[0-9]+\.[0-9](-.+)?$" | wc -l) -eq 0  ]]; then
         installed_versions=""
     else
-        readarray -t installed_versions < <(ls ${install_dir} | grep -E ^julia-[0-9]+\.[0-9]+\.[0-9]$)
+        readarray -t installed_versions < <(ls ${install_dir} | grep -E "^julia-[0-9]+\.[0-9]+\.[0-9](-.+)?$")
     fi
 }
 
@@ -187,6 +209,27 @@ set_architecture() {
     esac
 }
 
+
+# return a julia version string including architecture and os parts as used in download URLs
+# on linux this always assumes glibc and doesn't work for musl
+# e.g. "julia-1.11.0-linux-aarch64" for a given input "1.11.0"
+get_full_version_string() {
+    local full_name
+
+    if [[ ${1:0:5} != "julia" ]]; then
+        full_name=$(echo "julia-$1")
+    else
+        full_name=$1
+    fi
+
+    if [[ $(uname) == "Linux" ]]; then
+        echo "${full_name}-linux-${arch}"
+    else
+        echo "${full_name}-freebsd-${arch}"
+    fi
+}
+
+
 # return all available installtion options from Julia website
 show_all_install_options() {
     readarray -t install_options < <(echo "${source}" | grep -Eo julia-\(${latest}\|${lts}\)-\(linux\|musl\|freebsd\).+\.tar.gz\" | sed s/.tar.gz\"//g)
@@ -214,11 +257,10 @@ show_suggested_install_options() {
 
 # install a specific version of julia
 install() {
-    #check_permissions
-
+    check_permissions
 
     local download_url=$(echo "${source}" | grep -Eo https://.+${1}.tar.gz | head -n 1)
-    local name=$(echo ${1} | grep -Eo julia-[0-9]+\.[0-9]+\.[0-9])
+    local name=$(echo ${1} | sed -r s/-\(linux\|musl\|freebsd\)-${arch}//g)
     local input
 
     clear
@@ -226,10 +268,6 @@ install() {
         print_msg "${name} is already installed on this system" warn
         exit 0
     fi
-
-echo $1
-
-exit 0
 
     echo -e "download ${1} ...\n"
     curl -o ${install_dir}${1}.tag.gz ${download_url}
@@ -245,7 +283,6 @@ exit 0
     echo " done"
     
     echo -n "create version specific link ..."
-    name=$(echo ${1} | grep -Eo julia-[0-9]+\.[0-9]+\.[0-9])
     ln -s ${install_dir}${name}/bin/julia /usr/bin/${name}
     echo " done"
 
@@ -341,7 +378,7 @@ uninstall() {
 
     # validate version string with installed versions
     if [[ ! $(echo ${installed_versions[*]} | grep -o ${version}) ]]; then
-        print_msg "Invalid julia version: ${version}" error
+        print_msg "Invalid Julia version: ${version}" error
         exit 1
     fi
 
@@ -461,7 +498,6 @@ main_menu() {
 check_dependencies
 set_architecture
 set_install_directory
-get_installed_versions
 check_agrs $@
 
 exit 0
