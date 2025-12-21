@@ -17,6 +17,8 @@ set -o nounset
 
 ## consts
 
+DEBUG=false  # set to true to print function trace function calls, for debugging
+
 HELP="Usage: install_julia.sh [command] [argument]\n\n
 
 Run without any parameters to enter interactive mode. Following commands and\n
@@ -155,15 +157,18 @@ set_install_directory() {
 
 # scrap available versions from Julia website
 get_available_versions() {
-    source=$(curl -s https://julialang.org/downloads/#current_stable_release)
+    [ DEBUG ] && echo "available versions"
+    source=$(curl -s https://julialang.org/downloads/manual-downloads/)
     latest=$(echo "${source}" | grep "id=current_stable_release" | grep -Eo v[0-9]+\.[0-9]+\.[0-9]+ )
     latest=${latest:1}
     lts=$(echo "${source}" | grep "id=long_term_support_release" | grep -Eo v[0-9]+\.[0-9]+\.[0-9]+ )
     lts=${lts:1}
+    [ DEBUG ] && echo "latest: $latest\nlts: $lts"
 }
 
 # check for installed julia versions
 get_installed_versions() {
+    [ DEBUG ] && echo "installed versions"
     if [[ $(ls ${install_dir} | grep -E "^julia-[0-9]+\.[0-9]+\.[0-9](-.+)?$" | wc -l) -eq 0  ]]; then
         installed_versions=""
     else
@@ -440,6 +445,7 @@ uninstall_menu() {
 
 # main menu
 main_menu() {
+    echo "main menu"
     local input
     local command
 
