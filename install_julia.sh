@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-# Purpose of this script is to install / uninstall Julia on Linux and FreeBSD systems.
+# Purpose of this script is to install / remove Julia on Linux and FreeBSD systems.
 
 # THE SOFTWARE IS PROVIDED ‘AS IS’, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -26,7 +26,7 @@ arguments are supportet for non-interactive usage:\n\n
 
 install [latest|lts|<version>]\t install the latest stable release (default), the current LTS version or a specific version, e.g. \"1.11.0-alpha2\"\n
 list\t\t\t\t list all installed versions\n
-uninstall <version>\t\t uninstall a specific julia version\n
+remove <version>\t\t remove a specific julia version\n
 help\t\t\t\t show this help text\n\n
 
 Version:\n
@@ -34,7 +34,7 @@ Version:\n
 
 Examples:\n
  install_julia.sh install 1.11.0-alpha2\t\t # install julia-1.11.0-alpha2\n
- install_julia.sh uninstall 1.10.0\t # uninstall julia-1.10.0
+ install_julia.sh remove 1.10.0\t # remove julia-1.10.0
 "
 
 
@@ -131,10 +131,10 @@ check_agrs() {
             show_installed_versions
             exit 0
             ;;
-            uninstall)
+            remove | uninstall)
             if [[ $# -eq 2 ]]; then
                 get_installed_versions
-                uninstall $2
+                remove_version $2
                 exit 0
             else
                 print_msg "No version specified."
@@ -152,8 +152,10 @@ check_agrs() {
 set_install_directory() {
     if [[ $(uname) = "Linux" ]]; then
         install_dir="/opt/"
+        bin_dir="/usr/bin/"
     elif [[ $(uname) = "FreeBSD" ]]; then
         install_dir="/usr/local/"
+        bin_dir="/usr/bin/"
     else
         print_msg "Unsupportet operating system: \"$(uname)\", only Linux and FreeBSD are supportet by this installation script."
     fi
@@ -252,6 +254,185 @@ get_full_version_string() {
     fi
 }
 
+# extract a version string from an installed Julia directory or download target name
+get_version_string() {
+    local version
+
+    version="$1"
+    version="${version#julia-}"
+    version=$(echo "${version}" | sed -E 's/-(linux|freebsd|musl)-.+$//')
+
+    echo "${version}"
+}
+
+# return a sortable key for Julia versions including prerelease stages
+get_version_sort_key() {
+    local version
+    local stage_rank=3
+    local stage_number=0
+
+    version=$(get_version_string "$1")
+
+    if [[ ${version} =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-(alpha|beta|rc)([0-9]+))?$ ]]; then
+        case ${BASH_REMATCH[5]:-stable} in
+            alpha)
+            stage_rank=0
+            ;;
+            beta)
+            stage_rank=1
+            ;;
+            rc)
+            stage_rank=2
+            ;;
+            *)
+            stage_rank=3
+            ;;
+        esac
+
+        stage_number=${BASH_REMATCH[6]:-0}
+        printf "%05d.%05d.%05d.%05d.%05d\n" \
+            "${BASH_REMATCH[1]}" \
+            "${BASH_REMATCH[2]}" \
+            "${BASH_REMATCH[3]}" \
+            "${stage_rank}" \
+            "${stage_number}"
+    fi
+}
+
+# test whether the first version is older than the second one
+version_is_older() {
+    local current_key
+    local target_key
+
+    current_key=$(get_version_sort_key "$1")
+    target_key=$(get_version_sort_key "$2")
+
+    [[ -n ${current_key} && -n ${target_key} && ${current_key} < ${target_key} ]]
+}
+
+# return the major.minor part of a Julia version string
+get_major_minor_version() {
+    local version
+
+    version=$(get_version_string "$1")
+
+    if [[ ${version} =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-.+)?$ ]]; then
+        echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+    fi
+}
+
+# return the branch name for an installed Julia version
+get_installed_version_branch() {
+    local version
+    local version_major_minor
+    local lts_major_minor
+
+    version=$(get_version_string "$1")
+
+    if [[ ${version} =~ -(alpha|beta|rc)[0-9]+$ ]]; then
+        echo "prerelease"
+        return 0
+    fi
+
+    version_major_minor=$(get_major_minor_version "${version}")
+    lts_major_minor=$(get_major_minor_version "${lts}")
+
+    if [[ -n ${lts_major_minor} && ${version_major_minor} == ${lts_major_minor} ]]; then
+        echo "lts"
+    else
+        echo "stable"
+    fi
+}
+
+# return the current target version for a Julia branch
+get_branch_target_version() {
+    case $1 in
+        stable)
+        echo "${latest}"
+        ;;
+        lts)
+        echo "${lts}"
+        ;;
+        prerelease)
+        echo "${prerelease:-}"
+        ;;
+    esac
+}
+
+# return the display label for a Julia branch
+get_branch_label() {
+    case $1 in
+        stable)
+        echo "Stable"
+        ;;
+        lts)
+        echo "LTS"
+        ;;
+        prerelease)
+        if [[ -n ${prerelease:-} ]]; then
+            get_version_branch_label "$(get_full_version_string "${prerelease}")"
+        else
+            echo "Prerelease"
+        fi
+        ;;
+    esac
+}
+
+# return the currently configured default Julia installation name, if available
+get_default_installed_version() {
+    local default_path
+
+    if [[ -e ${bin_dir}julia ]]; then
+        default_path=$(readlink -f "${bin_dir}julia" 2> /dev/null || true)
+        if [[ ${default_path} =~ /(julia-[0-9]+\.[0-9]+\.[0-9]+(-.+)?)/bin/julia$ ]]; then
+            echo "${BASH_REMATCH[1]}"
+        fi
+    fi
+}
+
+# point the default julia executable to a specific installed version
+set_default_version() {
+    rm -f "${bin_dir}julia"
+    ln -s "${install_dir}${1}/bin/julia" "${bin_dir}julia"
+}
+
+# test whether a branch has at least one installed version with an available update
+branch_has_updates() {
+    local branch
+    local target_version
+    local version
+
+    if [[ -z ${installed_versions:-} ]]; then
+        return 1
+    fi
+
+    branch="$1"
+    target_version=$(get_branch_target_version "${branch}")
+
+    if [[ -z ${target_version} ]]; then
+        return 1
+    fi
+
+    for version in "${installed_versions[@]}"; do
+        if [[ -n ${version} && $(get_installed_version_branch "${version}") == ${branch} ]] && version_is_older "${version}" "${target_version}"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# populate the list of installed branches with available updates
+get_update_branches() {
+    update_branches=()
+
+    for branch in stable lts prerelease; do
+        if branch_has_updates "${branch}"; then
+            update_branches+=("${branch}")
+        fi
+    done
+}
+
 # return the branch label for a listed Julia install option
 get_version_branch_label() {
     local version
@@ -310,12 +491,22 @@ show_all_install_options() {
 # return the suggested installation options for this machine
 show_suggested_install_options() {
     if [[ -z ${arch} ]]; then
-        show_all_install_options
+        readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" '
+            . as $versions |
+            [$latest, $lts] |
+            map(select(length > 0)) |
+            map($versions[.].files[]) |
+            reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
+            .[] |
+            select(.extension == "tar.gz" and (.os == "linux" or .os == "freebsd")) |
+            .url | split("/") | last | rtrimstr(".tar.gz")')
+
+        show_install_options
     else
         if [[ $(uname) == "Linux" ]]; then
-            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg prerelease "$prerelease" --arg arch "$arch" '
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
                             . as $versions |
-                            [$latest, $lts, $prerelease] |
+                            [$latest, $lts] |
                             map(select(length > 0)) |
                             map($versions[.].files[]) |
                             reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
@@ -323,9 +514,9 @@ show_suggested_install_options() {
                             select(.extension == "tar.gz" and .os == "linux" and .arch == $arch) |
                             .url | split("/") | last | rtrimstr(".tar.gz")')
         else
-            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg prerelease "$prerelease" --arg arch "$arch" '
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
                             . as $versions |
-                            [$latest, $lts, $prerelease] |
+                            [$latest, $lts] |
                             map(select(length > 0)) |
                             map($versions[.].files[]) |
                             reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
@@ -337,59 +528,80 @@ show_suggested_install_options() {
     fi
 }
 
-# install a specific version of julia
-install() {
-    check_permissions
-
-    local name=$(echo ${1} | sed -r s/-\(linux\|musl\|freebsd\)-${arch}//g)
-    local version="${name#julia-}"
-    local download_url=$(echo "${source}" | jq -r --arg v "$version" --arg fname "${1}.tar.gz" '.[$v].files[] | select(.url | endswith("/" + $fname)) | .url')
+# install a specific version of julia without exiting the script
+install_version() {
+    local name
+    local version
+    local download_url
     local input
+    local set_default_mode="${2:-prompt}"
+    local clear_screen="${3:-true}"
 
-    clear
-    if [[ -d ${install_dir}${name} ]]; then
-        print_msg "${name} is already installed on this system" warn
-        exit 0
+    name=$(echo "$1" | sed -r s/-\(linux\|musl\|freebsd\)-${arch}//g)
+    version="${name#julia-}"
+    download_url=$(echo "${source}" | jq -r --arg v "$version" --arg fname "${1}.tar.gz" '.[$v].files[] | select(.url | endswith("/" + $fname)) | .url')
+
+    if [[ ${clear_screen} == true ]]; then
+        clear
     fi
 
-    echo -e "download ${1} ...\n"
-    curl -o ${install_dir}${1}.tag.gz ${download_url}
-    clear
-    echo "download ${1} ... done"
-    
+    if [[ -d ${install_dir}${name} ]]; then
+        print_msg "${name} is already installed on this system" warn
+        return 0
+    fi
+
+    echo -e "download $1 ...\n"
+    curl -o ${install_dir}$1.tag.gz ${download_url}
+
+    if [[ ${clear_screen} == true ]]; then
+        clear
+    fi
+
+    echo "download $1 ... done"
+
     echo -n "extract archive ..."
-    tar -C ${install_dir} -xf ${install_dir}${1}.tag.gz
+    tar -C ${install_dir} -xf ${install_dir}$1.tag.gz
     echo " done"
-    
+
     echo -n "remove archive ..."
-    rm ${install_dir}${1}.tag.gz
+    rm ${install_dir}$1.tag.gz
     echo " done"
-    
+
     echo -n "create version specific link ..."
-    ln -s ${install_dir}${name}/bin/julia /usr/bin/${name}
+    ln -s ${install_dir}${name}/bin/julia ${bin_dir}${name}
     echo " done"
 
     echo -e "\nInstallation completed successfully!"
     echo -e "Installation directory: ${install_dir}${name}\n"
-    while true; do
-        read -p "Set ${name} as default julia version on this system [Y/n]: " input
-        case ${input} in
-            "" | y | Y | yes | Yes | YES)
-            if [[ -h /usr/bin/julia ]]; then
-                rm /usr/bin/julia                
-            fi
-            ln -s ${install_dir}${name}/bin/julia /usr/bin/julia
-            break
-            ;;
-            n | N | no | No | NO)
-            break
-            ;;
-            *)
-            print_msg "invalid input, enter \"y\" (yes) or \"n\" (no)" warn
-            ;;
-        esac
-    done
 
+    case ${set_default_mode} in
+        prompt)
+        while true; do
+            read -p "Set ${name} as default julia version on this system [Y/n]: " input
+            case ${input} in
+                "" | y | Y | yes | Yes | YES)
+                set_default_version "${name}"
+                break
+                ;;
+                n | N | no | No | NO)
+                break
+                ;;
+                *)
+                print_msg "invalid input, enter \"y\" (yes) or \"n\" (no)" warn
+                ;;
+            esac
+        done
+        ;;
+        yes)
+        set_default_version "${name}"
+        ;;
+    esac
+}
+
+# install a specific version of julia
+install() {
+    check_permissions
+    install_version "$1"
     exit 0
 }
 
@@ -447,9 +659,8 @@ install_menu() {
 }
 
 
-# unsinstall a specific julia version
-uninstall() {
-    check_permissions
+# remove a specific julia version without exiting the script
+remove_installed_version() {
     local version
 
     # prepend 'julia-' to version string if required
@@ -459,38 +670,121 @@ uninstall() {
         version=${1}
     fi
 
-    # validate version string with installed versions
-    if [[ ! $(echo ${installed_versions[*]} | grep -o ${version}) ]]; then
-        print_msg "Invalid Julia version: ${version}" error
-        exit 1
-    fi
-
     if [[ -d ${install_dir}${version} ]]; then
         # check for default installation
-        if [[ $(readlink -f /usr/bin/julia | grep -o ${version}) ]]; then
-            rm /usr/bin/julia
+        if readlink -f ${bin_dir}julia 2> /dev/null | grep -q ${version}; then
+            rm -f ${bin_dir}julia
         fi
-        rm /usr/bin/${version}
+        rm -f ${bin_dir}${version}
         rm -r ${install_dir}${version}
         if [[ ${?} ]]; then
             print_msg "${version} deleted successfully" info
-            exit 0
+            return 0
         else
-            exit 1
+            return 1
         fi
     else
         print_msg "Installation directory: '${install_dir}${1}' not found." error
-        exit 1
+        return 1
     fi
 }
 
 
-# uninstall menu, if argument noclear is set, the console will not be cleared
-uninstall_menu() {
+# remove a specific julia version
+remove_version() {
+    check_permissions
+    local version
+
+    if [[ ${1:0:6} != "julia-" ]]; then
+        version="julia-${1}"
+    else
+        version=${1}
+    fi
+
+    # validate version string with installed versions
+    if ! printf '%s\n' "${installed_versions[@]}" | grep -qx "${version}"; then
+        print_msg "Invalid Julia version: ${version}" error
+        exit 1
+    fi
+
+    remove_installed_version "${version}"
+    exit 0
+}
+
+
+# install the latest version for each installed branch with available updates
+apply_updates() {
+    local default_version
+    local default_branch
+    local branch
+    local target_version
+    local target_full_name
+    local version
+
+    get_update_branches
+
+    if [[ ${#update_branches[@]} -eq 0 ]]; then
+        print_msg "No updates available." info
+        return 0
+    fi
+
+    default_version=$(get_default_installed_version)
+    if [[ -n ${default_version} ]]; then
+        default_branch=$(get_installed_version_branch "${default_version}")
+    else
+        default_branch=""
+    fi
+
+    clear
+    echo -e "Update Julia\n"
+
+    for branch in "${update_branches[@]}"; do
+        target_version=$(get_branch_target_version "${branch}")
+        target_full_name=$(get_full_version_string "${target_version}")
+
+        echo "$(get_branch_label "${branch}"): julia-${target_version}"
+
+        if [[ -d ${install_dir}julia-${target_version} ]]; then
+            print_msg "julia-${target_version} is already installed, skipping download" info
+        else
+            install_version "${target_full_name}" "no" "false"
+        fi
+    done
+
+    for branch in "${update_branches[@]}"; do
+        target_version=$(get_branch_target_version "${branch}")
+        for version in "${installed_versions[@]}"; do
+            if [[ -n ${version} && $(get_installed_version_branch "${version}") == ${branch} && ${version} != julia-${target_version} ]]; then
+                remove_installed_version "${version}"
+            fi
+        done
+    done
+
+    if [[ -n ${default_branch} ]]; then
+        target_version=$(get_branch_target_version "${default_branch}")
+        if [[ -n ${target_version} && -d ${install_dir}julia-${target_version} ]]; then
+            set_default_version "julia-${target_version}"
+        fi
+    fi
+
+    echo -e "\nUpdate completed successfully!"
+}
+
+
+# update installed Julia branches
+update_installed_versions() {
+    check_permissions
+    apply_updates
+    exit 0
+}
+
+
+# remove menu, if argument noclear is set, the console will not be cleared
+remove_menu() {
     local input
     local command
     clear
-    echo -e "Uninstall Julia"
+    echo -e "Remove Julia"
     show_installed_versions "num"
     echo -e "[b] Back to main menu\n[q] Quit\n"
     while true; do
@@ -504,12 +798,12 @@ uninstall_menu() {
             break
             ;;
             "")
-            command="uninstall ${installed_versions[0]}"
+            command="remove_version ${installed_versions[0]}"
             break
             ;;
             *)
             if [[ ${input} =~ [0-9]+ && ${input} -ge 1 && ${input} -le ${#installed_versions[*]} ]]; then
-                command="uninstall ${installed_versions[$((${input} - 1))]}"
+                command="remove_version ${installed_versions[$((${input} - 1))]}"
             else
                 print_msg "invalid input" warn
             fi
@@ -526,9 +820,17 @@ main_menu() {
     echo "main menu"
     local input
     local command
+    local update_available=false
+    local default_selection="i"
 
     if [[ $# -eq 0 || ${1} != "noclear" ]]; then
         clear
+    fi
+
+    get_update_branches
+    if [[ ${#update_branches[@]} -gt 0 ]]; then
+        update_available=true
+        default_selection="u"
     fi
     
     if [[ -z ${installed_versions} ]]; then
@@ -545,26 +847,47 @@ main_menu() {
     fi
     
     echo -e "[i] Install"
+    if [[ ${update_available} == true ]]; then
+        echo -e "[u] Update"
+    else
+        echo -e "\033[90m[u] Update\033[0m"
+    fi
     if [[ -n ${installed_versions} ]]; then
-        echo -e "[u] Uninstall"
+        echo -e "[r] Remove"
     fi
     echo -e "[q] Quit\n"
 
     while true; do
-        read -p "Select an option [i]: " input
+        read -p "Select an option [${default_selection}]: " input
         case ${input} in
             q)
             exit 0
             ;;
-            i | "")
+            i)
             command=install_menu
             break
             ;;
             u)
-            if [[ -n ${installed_versions} ]]; then
-                command=uninstall_menu
+            if [[ ${update_available} == true ]]; then
+                command=update_installed_versions
             else
                 print_msg "invalid input" warn
+            fi
+            break
+            ;;
+            r)
+            if [[ -n ${installed_versions} ]]; then
+                command=remove_menu
+            else
+                print_msg "invalid input" warn
+            fi
+            break
+            ;;
+            "")
+            if [[ ${update_available} == true ]]; then
+                command=update_installed_versions
+            else
+                command=install_menu
             fi
             break
             ;;
