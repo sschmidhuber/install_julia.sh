@@ -724,7 +724,7 @@ apply_updates() {
     get_update_branches
 
     if [[ ${#update_branches[@]} -eq 0 ]]; then
-        print_msg "No updates available." info
+        print_msg "no updates available" info
         return 0
     fi
 
@@ -871,7 +871,8 @@ main_menu() {
             if [[ ${update_available} == true ]]; then
                 command=update_installed_versions
             else
-                print_msg "invalid input" warn
+                print_msg "no updates available" info
+                continue
             fi
             break
             ;;
