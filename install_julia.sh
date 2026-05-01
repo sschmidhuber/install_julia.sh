@@ -83,6 +83,10 @@ check_dependencies() {
         print_msg "Missing dependency \"sed\""
         exit 2
     fi
+    if ! which jq > /dev/null; then
+        print_msg "Missing dependency \"jq\""
+        exit 2
+    fi
 }
 
 # parse arguments
@@ -155,20 +159,18 @@ set_install_directory() {
     fi
 }
 
-# scrap available versions from Julia website
+# fetch available versions from Julia versions API
 get_available_versions() {
-    [ DEBUG ] && echo "available versions"
-    source=$(curl -s https://julialang.org/downloads/manual-downloads/)
-    latest=$(echo "${source}" | grep "id=current_stable_release" | grep -Eo v[0-9]+\.[0-9]+\.[0-9]+ )
-    latest=${latest:1}
-    lts=$(echo "${source}" | grep "id=long_term_support_release" | grep -Eo v[0-9]+\.[0-9]+\.[0-9]+ )
-    lts=${lts:1}
-    [ DEBUG ] && echo "latest: $latest\nlts: $lts"
+    [ $DEBUG == true ] && echo "DEBUG: available versions"
+    source=$(curl -s https://julialang-s3.julialang.org/bin/versions.json)
+    latest=$(echo "${source}" | jq -r '[to_entries[] | select(.value.stable == true and (.key | test("-") | not)) | .key] | sort_by(split(".") | map(tonumber)) | last')
+    lts=$(curl -s https://raw.githubusercontent.com/JuliaLang/juliaup/main/versiondb/versiondb-x86_64-unknown-linux-gnu.json | jq -r '.AvailableChannels.lts.Version | split("+")[0]')
+    #[ $DEBUG == true ] && echo "DEBUG: latest: ${latest}\nDEBUG: lts: ${lts}" I have no idea why this line makes everything fail
 }
 
 # check for installed julia versions
 get_installed_versions() {
-    [ DEBUG ] && echo "installed versions"
+    [ $DEBUG == true ] && echo "DEBUG: installed versions"
     if [[ $(ls ${install_dir} | grep -E "^julia-[0-9]+\.[0-9]+\.[0-9](-.+)?$" | wc -l) -eq 0  ]]; then
         installed_versions=""
     else
@@ -235,9 +237,14 @@ get_full_version_string() {
 }
 
 
-# return all available installtion options from Julia website
+# return all available installtion options from Julia versions API
 show_all_install_options() {
-    readarray -t install_options < <(echo "${source}" | grep -Eo julia-\(${latest}\|${lts}\)-\(linux\|musl\|freebsd\).+\.tar.gz\" | sed s/.tar.gz\"//g)
+    readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" '
+      [.[$latest].files[], .[$lts].files[]] |
+      unique_by(.url) |
+      .[] |
+      select(.extension == "tar.gz" and (.os == "linux" or .os == "freebsd")) |
+      .url | split("/") | last | rtrimstr(".tar.gz")')
 
     for i in $(seq ${#install_options[@]}); do
         echo "[${i}] ${install_options[$((${i}-1))]}"
@@ -250,10 +257,20 @@ show_suggested_install_options() {
         show_all_install_options
     else
         if [[ $(uname) == "Linux" ]]; then
-            readarray -t install_options < <(echo "${source}" | grep -Eo julia-\(${latest}\|${lts}\)-\(linux\|musl\)-${arch}\.tar.gz\" | sed s/.tar.gz\"//g)
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
+              [.[$latest].files[], .[$lts].files[]] |
+              unique_by(.url) |
+              .[] |
+              select(.extension == "tar.gz" and .os == "linux" and .arch == $arch) |
+              .url | split("/") | last | rtrimstr(".tar.gz")')
         else
-            readarray -t install_options < <(echo "${source}" | grep -Eo julia-\(${latest}\|${lts}\)-freebsd-${arch}\.tar.gz\" | sed s/.tar.gz\"//g)
-        fi        
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
+              [.[$latest].files[], .[$lts].files[]] |
+              unique_by(.url) |
+              .[] |
+              select(.extension == "tar.gz" and .os == "freebsd" and .arch == $arch) |
+              .url | split("/") | last | rtrimstr(".tar.gz")')
+        fi
         for i in $(seq ${#install_options[@]}); do
             echo "[${i}] ${install_options[$((${i}-1))]}"
         done
@@ -264,8 +281,9 @@ show_suggested_install_options() {
 install() {
     check_permissions
 
-    local download_url=$(echo "${source}" | grep -Eo https://.+${1}.tar.gz | head -n 1)
     local name=$(echo ${1} | sed -r s/-\(linux\|musl\|freebsd\)-${arch}//g)
+    local version="${name#julia-}"
+    local download_url=$(echo "${source}" | jq -r --arg v "$version" --arg fname "${1}.tar.gz" '.[$v].files[] | select(.url | endswith("/" + $fname)) | .url')
     local input
 
     clear
