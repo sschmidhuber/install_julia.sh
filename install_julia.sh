@@ -165,6 +165,22 @@ get_available_versions() {
     source=$(curl -s https://julialang-s3.julialang.org/bin/versions.json)
     latest=$(echo "${source}" | jq -r '[to_entries[] | select(.value.stable == true and (.key | test("-") | not)) | .key] | sort_by(split(".") | map(tonumber)) | last')
     lts=$(curl -s https://raw.githubusercontent.com/JuliaLang/juliaup/main/versiondb/versiondb-x86_64-unknown-linux-gnu.json | jq -r '.AvailableChannels.lts.Version | split("+")[0]')
+    prerelease=$(echo "${source}" | jq -r --arg latest "$latest" '
+            def version_key:
+                capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)(?:-(?<stage>alpha|beta|rc)(?<stage_num>[0-9]+))?$")
+                | [(.major | tonumber), (.minor | tonumber), (.patch | tonumber),
+                     (if .stage == "alpha" then 0 elif .stage == "beta" then 1 elif .stage == "rc" then 2 else 3 end),
+                     ((.stage_num // "0") | tonumber)];
+            def base_version_key:
+                split("-")[0]
+                | capture("^(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.(?<patch>[0-9]+)$")
+                | [(.major | tonumber), (.minor | tonumber), (.patch | tonumber)];
+            [to_entries[]
+             | select(.value.stable == false and (.key | test("-(alpha|beta|rc)[0-9]+$")))
+             | select((.key | base_version_key) > ($latest | base_version_key))
+             | .key]
+            | sort_by(version_key)
+            | last // empty')
     #[ $DEBUG == true ] && echo "DEBUG: latest: ${latest}\nDEBUG: lts: ${lts}" I have no idea why this line makes everything fail
 }
 
@@ -239,12 +255,15 @@ get_full_version_string() {
 
 # return all available installtion options from Julia versions API
 show_all_install_options() {
-    readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" '
-      [.[$latest].files[], .[$lts].files[]] |
-      unique_by(.url) |
-      .[] |
-      select(.extension == "tar.gz" and (.os == "linux" or .os == "freebsd")) |
-      .url | split("/") | last | rtrimstr(".tar.gz")')
+    readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg prerelease "$prerelease" '
+            . as $versions |
+            [$latest, $lts, $prerelease] |
+            map(select(length > 0)) |
+            map($versions[.].files[]) |
+            reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
+            .[] |
+            select(.extension == "tar.gz" and (.os == "linux" or .os == "freebsd")) |
+            .url | split("/") | last | rtrimstr(".tar.gz")')
 
     for i in $(seq ${#install_options[@]}); do
         echo "[${i}] ${install_options[$((${i}-1))]}"
@@ -257,19 +276,25 @@ show_suggested_install_options() {
         show_all_install_options
     else
         if [[ $(uname) == "Linux" ]]; then
-            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
-              [.[$latest].files[], .[$lts].files[]] |
-              unique_by(.url) |
-              .[] |
-              select(.extension == "tar.gz" and .os == "linux" and .arch == $arch) |
-              .url | split("/") | last | rtrimstr(".tar.gz")')
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg prerelease "$prerelease" --arg arch "$arch" '
+                            . as $versions |
+                            [$latest, $lts, $prerelease] |
+                            map(select(length > 0)) |
+                            map($versions[.].files[]) |
+                            reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
+                            .[] |
+                            select(.extension == "tar.gz" and .os == "linux" and .arch == $arch) |
+                            .url | split("/") | last | rtrimstr(".tar.gz")')
         else
-            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg arch "$arch" '
-              [.[$latest].files[], .[$lts].files[]] |
-              unique_by(.url) |
-              .[] |
-              select(.extension == "tar.gz" and .os == "freebsd" and .arch == $arch) |
-              .url | split("/") | last | rtrimstr(".tar.gz")')
+            readarray -t install_options < <(echo "${source}" | jq -r --arg latest "$latest" --arg lts "$lts" --arg prerelease "$prerelease" --arg arch "$arch" '
+                            . as $versions |
+                            [$latest, $lts, $prerelease] |
+                            map(select(length > 0)) |
+                            map($versions[.].files[]) |
+                            reduce .[] as $file ([]; if any(.[]; .url == $file.url) then . else . + [$file] end) |
+                            .[] |
+                            select(.extension == "tar.gz" and .os == "freebsd" and .arch == $arch) |
+                            .url | split("/") | last | rtrimstr(".tar.gz")')
         fi
         for i in $(seq ${#install_options[@]}); do
             echo "[${i}] ${install_options[$((${i}-1))]}"
