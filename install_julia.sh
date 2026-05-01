@@ -252,6 +252,45 @@ get_full_version_string() {
     fi
 }
 
+# return the branch label for a listed Julia install option
+get_version_branch_label() {
+    local version
+
+    version=$(echo "$1" | sed -E 's/^julia-([0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)[0-9]+)?)-(linux|freebsd|musl)-.+$/\1/')
+
+    if [[ ${version} == ${latest} ]]; then
+        echo "Stable"
+    elif [[ ${version} == ${lts} ]]; then
+        echo "LTS"
+    elif [[ -n ${prerelease:-} && ${version} == ${prerelease} ]]; then
+        case ${version} in
+            *-alpha*)
+            echo "Alpha"
+            ;;
+            *-beta*)
+            echo "Beta"
+            ;;
+            *-rc*)
+            echo "Release Candidate"
+            ;;
+        esac
+    fi
+}
+
+# display currently loaded install options with their branch labels
+show_install_options() {
+    local branch
+
+    for i in $(seq ${#install_options[@]}); do
+        branch=$(get_version_branch_label "${install_options[$((${i}-1))]}")
+        if [[ -n ${branch} ]]; then
+            echo "[${i}] ${install_options[$((${i}-1))]} (${branch})"
+        else
+            echo "[${i}] ${install_options[$((${i}-1))]}"
+        fi
+    done
+}
+
 
 # return all available installtion options from Julia versions API
 show_all_install_options() {
@@ -265,9 +304,7 @@ show_all_install_options() {
             select(.extension == "tar.gz" and (.os == "linux" or .os == "freebsd")) |
             .url | split("/") | last | rtrimstr(".tar.gz")')
 
-    for i in $(seq ${#install_options[@]}); do
-        echo "[${i}] ${install_options[$((${i}-1))]}"
-    done
+    show_install_options
 }
 
 # return the suggested installation options for this machine
@@ -296,9 +333,7 @@ show_suggested_install_options() {
                             select(.extension == "tar.gz" and .os == "freebsd" and .arch == $arch) |
                             .url | split("/") | last | rtrimstr(".tar.gz")')
         fi
-        for i in $(seq ${#install_options[@]}); do
-            echo "[${i}] ${install_options[$((${i}-1))]}"
-        done
+        show_install_options
     fi
 }
 
